@@ -1,3 +1,4 @@
+import multiprocessing
 import face_recognition
 import cv2
 import time
@@ -6,11 +7,8 @@ from moviepy.editor import VideoFileClip
 import numpy as np                                                                                                         
 import scipy.io.wavfile as wf                                                                                              
 import matplotlib.pyplot as plt 
-from numba import jit
-
 import torch
 from IPython.display import Audio
-from pprint import pprint
 
 import timeit
 
@@ -19,12 +17,14 @@ class AudioVideoDetection():
     def __init__(self, wave_input_filename, video_filepath):
         self.clip = VideoFileClip(video_filepath)
         self.video_capture = cv2.VideoCapture(video_filepath)
-        total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        print( "Length of video in frames = " , total_frames)
+        self.total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        print( "Length of video in frames = " , self.total_frames)
         fps = self.video_capture.get(cv2.CAP_PROP_FPS)
         print("FPS = " , fps)
-        self.video_length = total_frames / fps
-        self.frame_rate = fps
+        self.video_length = self.total_frames / fps
+        print("Duration of video = " , self.video_length)
+        #self.frame_rate = fps
+        self.frame_rate = 20
         self._read_wav(wave_input_filename)._convert_to_mono()
         self.sample_window = 0.02 #ms
         self.sample_overlap = 0.01 #ms                                                                                                                                               
@@ -58,9 +58,12 @@ class AudioVideoDetection():
 
     def getAudioVideoData(self):
         start = timeit.default_timer()
-        video = self.getLipMovements()
+        video = self.getLipMovementsNew() #Eski haline döndür
         end = timeit.default_timer()
         print("Time taken for getting lip movements from video is ", end - start)
+        print("Video arrayinin uzunlugu = ", int(self.frame_rate * self.video_length) , " - " , len(video))
+        print("Yeni hesaplanan video_length = " , len(video) / self.frame_rate)
+        print("Video Chunks (ms) = ", 1000 * (self.video_length / len(video)))
         start = timeit.default_timer()
         audio = self.getSpeech()
         end = timeit.default_timer()
@@ -120,24 +123,23 @@ class AudioVideoDetection():
             if detected == False:
                 speech.append(0)
 
-        print("Lenght of video = " , self.data.shape[0] / self.rate)
+        print("Duration of audio = " , audio_length)
         print("Rate of audio = ", self.rate)
-        print("Length of data = " , len(self.data))                                                              
-
+        print("Length of data = " , len(self.data))
+        print("Length of speech array = ", len(speech))
+        print("Audio Chuncks (ms) = " , (audio_length / len(speech)) * 1000)                                                              
 
         return speech
 
-    @jit
     def getLipMovements(self):
 
         prev = 0
-
         while True:
             time_elapsed = time.time() - prev
             ret, frame = self.video_capture.read()
             while ret:
                 if time_elapsed > 1./self.frame_rate:
-                    
+                
                     prev = time.time()
 
                     face_locations = face_recognition.face_locations(frame)
@@ -172,6 +174,48 @@ class AudioVideoDetection():
         self.video_capture.release()
         cv2.destroyAllWindows()
         return self.lip_movements
+
+    def getLipMovementsNew(self):
+
+        #delay = int(1000 / self.frame_rate) #Chuck size
+        chunk_size = 30
+
+        # Read and display the frames
+        while True:
+            # Read the frame
+            success, frame = self.video_capture.read()
+            if not success:
+                break
+
+            face_locations = face_recognition.face_locations(frame)
+            face_landmarks_list = face_recognition.face_landmarks(frame, face_locations)
+
+            for face_landmarks in face_landmarks_list:
+
+                ret_mouth_open = self.is_mouth_open(face_landmarks)
+                if ret_mouth_open is True:
+                    self.lip_movements.append(1)
+                else:
+                    self.lip_movements.append(0)
+                
+            if(len(face_locations) == 0):
+                self.lip_movements.append(-1)
+
+            cv2.imshow("Frame", frame)
+
+            time.sleep(chunk_size / 1000)
+            
+            # Wait for the specified delay
+            key = cv2.waitKey(1)
+            if key == ord('q'):
+                break
+
+        self.video_capture.release()
+        cv2.destroyAllWindows()
+        return self.lip_movements
+
+
+
                                                                                         
                                                                                                                            
     def _read_wav(self, wave_file):                                                                                        
@@ -327,7 +371,7 @@ class AudioVideoDetection():
         return audio_detection
 
     def getMaximumScore(self , audio_window , video_window):
-        GAP = -2 #Cost of Substition, Deletion and Insertion
+        GAP = -2
         MATCH = 1
         MISS = -1
 
@@ -357,14 +401,18 @@ class AudioVideoDetection():
 
         processed_video = []
         temp = []
+        inRange = True
+        start = 0
         for i in range(0 , len(video_data)):
             if video_data[i] == -1:
-
-                if len(temp) != 0:
-                    processed_video.append((temp.copy(), i))
+                if len(temp) > 5:
+                    end = i-1
+                    processed_video.append((temp.copy(), start , end))
                 temp.clear()
-                
+                inRange = True
             else:
+                if inRange:
+                    start = i
                 temp.append(video_data[i])
-
+                inRange = False
         return processed_video
