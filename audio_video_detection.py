@@ -1,15 +1,11 @@
-import multiprocessing
 import face_recognition
 import cv2
-import time
 from mouth_open_algorithm import get_lip_height, get_mouth_height
 from moviepy.editor import VideoFileClip
 import numpy as np                                                                                                         
 import scipy.io.wavfile as wf                                                                                              
 import matplotlib.pyplot as plt 
 import torch
-from IPython.display import Audio
-
 import timeit
 
 class AudioVideoDetection():                                                                                             
@@ -21,10 +17,9 @@ class AudioVideoDetection():
         print( "Length of video in frames = " , self.total_frames)
         fps = self.video_capture.get(cv2.CAP_PROP_FPS)
         print("FPS = " , fps)
-        self.video_length = self.total_frames / fps
-        print("Duration of video = " , self.video_length)
-        #self.frame_rate = fps
-        self.frame_rate = 20
+        self.video_length = self.total_frames / fps #
+        print("Duration of video = " , self.video_length) #
+        self.frame_rate = fps
         self._read_wav(wave_input_filename)._convert_to_mono()
         self.sample_window = 0.02 #ms
         self.sample_overlap = 0.01 #ms                                                                                                                                               
@@ -35,43 +30,42 @@ class AudioVideoDetection():
         self.lip_movements = []                                                                               
         
 
-    def is_mouth_open(self,face_landmarks):
+    def calculate_mouth_distance(self,face_landmarks):
         top_lip = face_landmarks['top_lip']
         bottom_lip = face_landmarks['bottom_lip']
 
         top_lip_height = get_lip_height(top_lip)
         bottom_lip_height = get_lip_height(bottom_lip)
         mouth_height = get_mouth_height(top_lip, bottom_lip)
-        
-        # if mouth is open more than lip height * ratio, return true.
-        ratio = 0.5
-        #print('top_lip_height: %.2f, bottom_lip_height: %.2f, mouth_height: %.2f, min*ratio: %.2f' 
-           # % (top_lip_height,bottom_lip_height,mouth_height, min(top_lip_height, bottom_lip_height) * ratio))
             
-        if mouth_height > min(top_lip_height, bottom_lip_height) * ratio:
-            return True
-        else:
-            return False
+        if mouth_height > min(top_lip_height, bottom_lip_height) * 1:
+            return 4
+        elif mouth_height > min(top_lip_height, bottom_lip_height) * 0.75:
+            return 3
+        elif mouth_height > min(top_lip_height, bottom_lip_height) * 0.5:
+            return 2
+        elif mouth_height > min(top_lip_height, bottom_lip_height) * 0.25:
+            return 1
+        else: 
+            return 0
     
-
-    #Returns audio, video data as tuple
 
     def getAudioVideoData(self):
         start = timeit.default_timer()
-        video = self.getLipMovementsNew() #Eski haline döndür
+        video = self.getLipMovements()
         end = timeit.default_timer()
         print("Time taken for getting lip movements from video is ", end - start)
         print("Video arrayinin uzunlugu = ", int(self.frame_rate * self.video_length) , " - " , len(video))
         print("Yeni hesaplanan video_length = " , len(video) / self.frame_rate)
         print("Video Chunks (ms) = ", 1000 * (self.video_length / len(video)))
         start = timeit.default_timer()
-        audio = self.getSpeech()
+        audio = self.detect_speech()
         end = timeit.default_timer()
         print("Time taken for getting speech from audio is ", end - start)
         return audio , video
 
     def getAudioData(self):
-        audio_length = self.data.shape[0] / self.rate
+        audio_length = self.video_length 
         rate = self.rate
         return audio_length, rate
     
@@ -80,144 +74,41 @@ class AudioVideoDetection():
         frame_rate = self.frame_rate
         return video_length, frame_rate
 
-    def getSpeech(self):
-
-        SAMPLING_RATE = 16000
-
-        torch.set_num_threads(1)
-
-        USE_ONNX = False # change this to True if you want to test onnx model
-
-        model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
-                                    model='silero_vad',
-                                    force_reload=True,
-                                    onnx=USE_ONNX)
-
-        (get_speech_timestamps,
-        save_audio,
-        read_audio,
-        VADIterator,
-        collect_chunks) = utils
-
-        #Buradaki filename değiş
-        wav = read_audio(self.filename, sampling_rate=SAMPLING_RATE)
-        self.rate = SAMPLING_RATE
-        self.data = wav
-        frames = (len(wav) // 512) + 1
-        audio_length = wav.shape[0] / SAMPLING_RATE
-        dber_audio = audio_length / frames
-
-        # get speech timestamps from full audio file
-        speech_timestamps = get_speech_timestamps(wav, model, sampling_rate=SAMPLING_RATE, return_seconds = True)
-
-        speech = []
-
-        for i in range(0 , frames):
-            time = dber_audio * i
-            detected = False
-            for dic in speech_timestamps:
-                if dic['start'] < time and time < dic['end']:
-                    speech.append(1)
-                    detected = True
-                    break
-            if detected == False:
-                speech.append(0)
-
-        print("Duration of audio = " , audio_length)
-        print("Rate of audio = ", self.rate)
-        print("Length of data = " , len(self.data))
-        print("Length of speech array = ", len(speech))
-        print("Audio Chuncks (ms) = " , (audio_length / len(speech)) * 1000)                                                              
-
-        return speech
 
     def getLipMovements(self):
 
-        prev = 0
+        delay = 2
+        count = 0
+        frames = []
+        start = timeit.default_timer()
         while True:
-            time_elapsed = time.time() - prev
-            ret, frame = self.video_capture.read()
-            while ret:
-                if time_elapsed > 1./self.frame_rate:
-                
-                    prev = time.time()
-
-                    face_locations = face_recognition.face_locations(frame)
-                    face_landmarks_list = face_recognition.face_landmarks(frame, face_locations)
-
-                    # Loop through each face in this frame of video
-                    for face_landmarks in face_landmarks_list:
-
-                        # Display text for mouth open / close
-                        ret_mouth_open = self.is_mouth_open(face_landmarks)
-                        if ret_mouth_open is True:
-                            self.lip_movements.append(1)
-                            text = 'Open'
-                        else:
-                            self.lip_movements.append(0)
-                            text = 'Close'
-                        cv2.putText(frame, text, (0,50) , cv2.FONT_HERSHEY_DUPLEX, 1.0, (0, 0, 255), 1)
-                        
-                    if(len(face_locations) == 0):
-                        self.lip_movements.append(-1)
-                    # Display the resulting image
-                    #cv2.imshow('Video', frame)
-
-                # Hit 'q' on the keyboard to quit!
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-                time_elapsed = time.time() - prev
-                ret, frame = self.video_capture.read()
-            
-            break
-        
-        self.video_capture.release()
-        cv2.destroyAllWindows()
-        return self.lip_movements
-
-    def getLipMovementsNew(self):
-
-        #delay = int(1000 / self.frame_rate) #Chuck size
-        chunk_size = 30
-
-        # Read and display the frames
-        while True:
-            # Read the frame
             success, frame = self.video_capture.read()
             if not success:
                 break
-
-            face_locations = face_recognition.face_locations(frame)
-            face_landmarks_list = face_recognition.face_landmarks(frame, face_locations)
-
-            for face_landmarks in face_landmarks_list:
-
-                ret_mouth_open = self.is_mouth_open(face_landmarks)
-                if ret_mouth_open is True:
-                    self.lip_movements.append(1)
-                else:
-                    self.lip_movements.append(0)
-                
+            elif success and count % delay == 0:
+                frames.append(frame)
+            count += 1
+        end = timeit.default_timer()
+        print("Time taken for reading video frame by frame = " , end - start)
+        startProcess = timeit.default_timer()
+        for frame in frames:
+            face_locations = face_recognition.face_locations(frame , number_of_times_to_upsample = 0 , model= "hog")
             if(len(face_locations) == 0):
-                self.lip_movements.append(-1)
+                    self.lip_movements.append(-1)
+            else:
+                    face_landmarks_list = face_recognition.face_landmarks(frame, face_locations)
+                    for face_landmarks in face_landmarks_list:
+                        mouth_distance = self.calculate_mouth_distance(face_landmarks)
+                        self.lip_movements.append(mouth_distance)
 
-            cv2.imshow("Frame", frame)
-
-            time.sleep(chunk_size / 1000)
-            
-            # Wait for the specified delay
-            key = cv2.waitKey(1)
-            if key == ord('q'):
-                break
-
+        endProcess = timeit.default_timer()
+        print("Time taken for processing frame = " , endProcess - startProcess)
         self.video_capture.release()
         cv2.destroyAllWindows()
         return self.lip_movements
 
 
-
-                                                                                        
-                                                                                                                           
+                                                                                                              
     def _read_wav(self, wave_file):                                                                                        
         self.rate, self.data = wf.read(wave_file)                                                                          
         self.channels = len(self.data.shape)                                                                               
@@ -244,13 +135,7 @@ class AudioVideoDetection():
         data_amplitude = self._calculate_amplitude(data)                                                                   
         data_energy = data_amplitude ** 2                                                                                  
         return data_energy                                                                                                 
-                                                                                                                           
-    def _znormalize_energy(self, data_energy):                                                                             
-        energy_mean = np.mean(data_energy)                                                                                 
-        energy_std = np.std(data_energy)                                                                                   
-        energy_znorm = (data_energy - energy_mean) / energy_std                                                            
-        return energy_znorm                                                                                                
-                                                                                                                           
+                                                                                                                                                                                                                                                      
     def _connect_energy_with_frequencies(self, data_freq, data_energy):                                                    
         energy_freq = {}                                                                                                   
         for (i, freq) in enumerate(data_freq):                                                                             
@@ -260,7 +145,6 @@ class AudioVideoDetection():
     def _calculate_normalized_energy(self, data):                                                                          
         data_freq = self._calculate_frequencies(data)                                                                      
         data_energy = self._calculate_energy(data)                                                                         
-        #data_energy = self._znormalize_energy(data_energy) #znorm brings worse results                                    
         energy_freq = self._connect_energy_with_frequencies(data_freq, data_energy)                                        
         return energy_freq                                                                                                 
                                                                                                                            
@@ -270,66 +154,7 @@ class AudioVideoDetection():
             if start_band<f<end_band:                                                                                      
                 sum_energy += energy_frequencies[f]
         return sum_energy                                                                                                  
-                                                                                                                           
-    def _median_filter (self, x, k):                                                                                       
-        assert k % 2 == 1, "Median filter length must be odd."                                                             
-        assert x.ndim == 1, "Input must be one-dimensional."                                                               
-        k2 = (k - 1) // 2                                                                                                  
-        y = np.zeros ((len (x), k), dtype=x.dtype)                                                                         
-        y[:,k2] = x                                                                                                        
-        for i in range (k2):                                                                                               
-            j = k2 - i                                                                                                     
-            y[j:,i] = x[:-j]                                                                                               
-            y[:j,i] = x[0]                                                                                                 
-            y[:-j,-(i+1)] = x[j:]                                                                                          
-            y[-j:,-(i+1)] = x[-1]                                                                                          
-        return np.median (y, axis=1)                                                                                       
-                                                                                                                           
-    def _smooth_speech_detection(self, detected_windows):                                                                  
-        median_window=int(self.speech_window/self.sample_window)                                                           
-        if median_window%2==0: median_window=median_window-1                                                               
-        median_energy = self._median_filter(detected_windows[:,1], median_window)                                          
-        return median_energy                                                                                               
-                                                                                                                           
-    def convert_windows_to_readible_labels(self, detected_windows):                                                        
-        """ Takes as input array of window numbers and speech flags from speech                                            
-        detection and convert speech flags to time intervals of speech.                                                    
-        Output is array of dictionaries with speech intervals.                                                             
-        """                                                                                                                
-        speech_time = []                                                                                                   
-        is_speech = 0                                                                                                      
-        for window in detected_windows:                                                                                    
-            if (window[1]==1.0 and is_speech==0):                                                                          
-                is_speech = 1                                                                                              
-                speech_label = {}                                                                                          
-                speech_time_start = window[0] / self.rate                                                                  
-                speech_label['speech_begin'] = speech_time_start                                                           
-                print (window[0], speech_time_start)                                                                         
-                #speech_time.append(speech_label)                                                                          
-            if (window[1]==0.0 and is_speech==1):                                                                          
-                is_speech = 0                                                                                              
-                speech_time_end = window[0] / self.rate                                                                    
-                speech_label['speech_end'] = speech_time_end                                                               
-                speech_time.append(speech_label)                                                                           
-                print (window[0], speech_time_end)                                                                           
-        return speech_time                                                                                                 
-                                                                                                                           
-    def plot_detected_speech_regions(self):                                                                                
-        """ Performs speech detection and plot original signal and speech regions.                                         
-        """                                                                                                                
-        data = self.data                                                                                                   
-        detected_windows = self.detect_speech()                                                                            
-        data_speech = np.zeros(len(data))                                                                                  
-        it = np.nditer(detected_windows[:,0], flags=['f_index'])                                                           
-        while not it.finished:                                                                                             
-            data_speech[int(it[0])] = data[int(it[0])] * detected_windows[it.index,1]                                      
-            it.iternext()                                                                                                  
-        plt.figure()                                                                                                       
-        plt.plot(data_speech)                                                                                              
-        plt.plot(data)                                                                                                     
-        plt.show()                                                                                                                                                                                                               
-        print (data_speech)                                                                                                
-        return self                                                                                                        
+
                                                                                                                            
     def detect_speech(self):                                                                                               
         """ Detects speech regions based on ratio between speech band energy                                               
@@ -338,7 +163,8 @@ class AudioVideoDetection():
         """                                                                                                                
         detected_windows = np.array([])
         audio_detection = []                                                                                    
-        sample_window = int(self.rate * self.sample_window)
+        #sample_window = int(self.rate * self.sample_window)
+        sample_window = int(len(self.data) / len(self.lip_movements))
         sample_overlap = int(self.rate * self.sample_overlap)
         print("Lenght of video = " , self.data.shape[0] / self.rate)
         print("Rate of audio = ", self.rate)
@@ -363,12 +189,46 @@ class AudioVideoDetection():
             #if(i < len(self.lip_movements)):
             #    print("Speech Ratio = " , speech_ratio ," - threshold = " , self.speech_energy_threshold , " - Detected = " , bool(speech_ratio>self.speech_energy_threshold) , " - Mouth = " , bool(self.lip_movements[i]))             
             i += 1
-            speech_ratio = speech_ratio>self.speech_energy_threshold
-            audio_detection.append(int(speech_ratio))                                                       
-            #detected_windows = np.append(detected_windows, speech_ratio)    #Changed                                
-            sample_start += sample_overlap                                                                                 
-                                                
+
+            
+            if speech_ratio>0.6:
+                speech_ratio = 4
+            elif speech_ratio>0.45:
+                speech_ratio = 3
+            elif speech_ratio>0.3:
+                speech_ratio = 2
+            elif speech_ratio>0.15:
+                speech_ratio = 1
+            else:
+                speech_ratio = 0
+                
+            audio_detection.append(int(speech_ratio))
+
+            #speech_ratio = speech_ratio>self.speech_energy_threshold #Yorumu kaldır                                                       
+            #sample_start += sample_overlap                                                                                 
+            sample_start += sample_window
+
         return audio_detection
+
+    def preprocessVideo(self , video_data):
+
+        processed_video = []
+        temp = []
+        inRange = True
+        start = 0
+        for i in range(0 , len(video_data)):
+            if video_data[i] == -1:
+                if len(temp) > 5:
+                    end = i-1
+                    processed_video.append((temp.copy(), start , end))
+                temp.clear()
+                inRange = True
+            else:
+                if inRange:
+                    start = i
+                temp.append(video_data[i])
+                inRange = False
+        return processed_video
 
     def getMaximumScore(self , audio_window , video_window):
         GAP = -2
@@ -395,24 +255,30 @@ class AudioVideoDetection():
                 if matrix[i, j] >= max_score:
                         max_score = matrix[i, j]
                         
-        return max_score
+        return max_score 
 
-    def preprocessVideo(self , video_data):
+    """def getMaximumScore(self, audio_window, video_window):
+        score = 0
+        n = len(audio_window)
+        m = len(video_window)
+        
+        #print("Audio = " , audio_window)
+        #print("Video = " , video_window)
 
-        processed_video = []
-        temp = []
-        inRange = True
-        start = 0
-        for i in range(0 , len(video_data)):
-            if video_data[i] == -1:
-                if len(temp) > 5:
-                    end = i-1
-                    processed_video.append((temp.copy(), start , end))
-                temp.clear()
-                inRange = True
-            else:
-                if inRange:
-                    start = i
-                temp.append(video_data[i])
-                inRange = False
-        return processed_video
+        for i in range(n):
+            if (audio_window[i] == 0 and video_window[i] != 0):
+                score -= 2
+            elif(audio_window[i] != 0 and video_window[i] == 0):
+                score -= 2
+            elif(audio_window[i] == video_window[i]):
+                score += 5
+            elif(abs(audio_window[i] - video_window[i]) == 1):
+                score += 3
+            elif(abs(audio_window[i] - video_window[i]) == 2):
+                score += 2
+            elif(abs(audio_window[i] - video_window[i]) == 3):
+                score += 1
+        #print("Score = " , score)
+        return score """
+
+
